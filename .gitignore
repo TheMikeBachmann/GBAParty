@@ -3,3 +3,5 @@
 *.sav
 *.sa1
 build/
+.vscode/
+tools/
