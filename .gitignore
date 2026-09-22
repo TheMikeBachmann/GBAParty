@@ -1,0 +1,5 @@
+*.gba
+*.bin
+*.sav
+*.sa1
+build/
