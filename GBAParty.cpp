@@ -1,9 +1,16 @@
 #include <stdio.h>
 #include <SDL2/SDL.h> 
 #include <mgba/core/core.h>
+#include <mgba/core/log.h>
 #include <mgba/gba/interface.h>
 #include <vector>
 #include <memory>
+#include <thread>
+#include <cstdarg>
+#include <chrono>
+#include <mutex>
+#include <cstring>
+
 
 // Created to enable automatic SDL cleanup on program exit
 struct SDLSession {
@@ -18,6 +25,15 @@ struct mGBACore {
     }
 };
 
+//logger to supress less important messages
+void mGBALogger(struct mLogger* logger, int category, enum mLogLevel level, const char* message, va_list args) {
+    if (level & (0x01 | 0x02 | 0x04 | 0x40)) {
+        printf("[%d] %d: ", category, level);
+        vprintf(message, args);
+        printf("\n");
+    }
+}
+
 int main(void) {
     bool quit = false;
     SDLSession SDL;
@@ -30,9 +46,11 @@ int main(void) {
 
     // mgba core block. Moved here so SDL_Quit isn't called before the SDL_Init
     // video buffer for GBA screen
-    //struct mCore* core = nullptr;
     const char* romPath = "tools/Mario Kart - Super Circuit (USA).gba";
     std::vector<mColor> videoBuffer(GBA_VIDEO_HORIZONTAL_PIXELS * GBA_VIDEO_VERTICAL_PIXELS);
+    std::vector<mColor> safeVideoBuffer(GBA_VIDEO_HORIZONTAL_PIXELS * GBA_VIDEO_VERTICAL_PIXELS);
+    static mLogger loggerInstance = { mGBALogger };
+    mLogSetDefaultLogger(&loggerInstance);
     std::unique_ptr<mCore, mGBACore> core(mCoreFind(romPath));
     if (core == nullptr) {
         printf("Failed to find ROM: %s\n", romPath);
@@ -75,7 +93,26 @@ int main(void) {
         return 1;
     }
     
+    std::mutex videoBufferMutex;
+    std::jthread runFrameThread([&core, &videoBufferMutex, &videoBuffer, &safeVideoBuffer](std::stop_token st) {
+        auto period = std::chrono::duration<double>(1.0 / 59.7275); // keeps the gba framerate exactly hardware spec
+        auto deadline = std::chrono::steady_clock::now() + period;
 
+        while (!st.stop_requested()) {
+            core->runFrame(core.get());
+            //take the lock
+            //copy video buffer to a safe location for rendering
+            {
+                std::lock_guard<std::mutex> lock(videoBufferMutex);
+                std::copy(videoBuffer.begin(), videoBuffer.end(), safeVideoBuffer.begin());
+            }
+            
+            std::this_thread::sleep_until(deadline);
+            deadline += period;
+        }
+
+
+    });
 
     while (!quit) {
         SDL_Event event;
@@ -86,14 +123,15 @@ int main(void) {
             }
         }
 
-        core->runFrame(core.get());
-
         if (SDL_RenderClear(renderer.get()) != 0) {
             printf("SDL_RenderClear Error: %s\n", SDL_GetError());
             return 1;
         }
 
-        SDL_UpdateTexture(texture.get(), nullptr, videoBuffer.data(), GBA_VIDEO_HORIZONTAL_PIXELS * sizeof(mColor));
+        {
+            std::lock_guard<std::mutex> lock(videoBufferMutex);
+            SDL_UpdateTexture(texture.get(), nullptr, safeVideoBuffer.data(), GBA_VIDEO_HORIZONTAL_PIXELS * sizeof(mColor));
+        }
         SDL_RenderCopy(renderer.get(), texture.get(), nullptr, nullptr);
         
 
