@@ -39,7 +39,7 @@ int main(void) {
     bool quit = false;
     SDLSession SDL;
     setvbuf(stdout, nullptr, _IONBF, 0);
-    uint16_t controllerState = 0x03FF;
+    std::atomic<uint16_t> controllerState = 0x03FF;
     uint16_t lastControllerState = controllerState;
 
     // SDL window block
@@ -106,11 +106,12 @@ int main(void) {
     }
     
     std::mutex videoBufferMutex;
-    std::jthread runFrameThread([&core, &videoBufferMutex, &videoBuffer, &safeVideoBuffer](std::stop_token st) {
+    std::jthread runFrameThread([&core, &videoBufferMutex, &videoBuffer, &safeVideoBuffer, &controllerState](std::stop_token st) {
         auto period = std::chrono::duration<double>(1.0 / 59.7275); // keeps the gba framerate exactly hardware spec
         auto deadline = std::chrono::steady_clock::now() + period;
 
         while (!st.stop_requested()) {
+            core->setKeys(core.get(), ~controllerState.load() & 0x03FF);
             core->runFrame(core.get());
             //take the lock
             //copy video buffer to a safe location for rendering
@@ -140,6 +141,7 @@ int main(void) {
             }
 
             if (event.type == SDL_EVENT_GAMEPAD_REMOVED) {
+                controllerState.store(0x03FF);
                 controller.reset(nullptr);
                 printf("Controller removed: %s\n", SDL_GetGamepadName(controller.get() ? controller.get() : nullptr));
             }
@@ -152,21 +154,22 @@ int main(void) {
 
         if (controller != nullptr) {
             // Update controller state
-            controllerState = 0x03FF; // Reset state
-            if (SDL_GetGamepadButton(controller.get(), SDL_GAMEPAD_BUTTON_START)) {controllerState &= ~(1 << GBA_KEY_START);}
-            if (SDL_GetGamepadButton(controller.get(), SDL_GAMEPAD_BUTTON_BACK)) {controllerState &= ~(1 << GBA_KEY_SELECT);}
-            if (SDL_GetGamepadButton(controller.get(), SDL_GAMEPAD_BUTTON_DPAD_UP)) {controllerState &= ~(1 << GBA_KEY_UP);}
-            if (SDL_GetGamepadButton(controller.get(), SDL_GAMEPAD_BUTTON_DPAD_DOWN)) {controllerState &= ~(1 << GBA_KEY_DOWN);}
-            if (SDL_GetGamepadButton(controller.get(), SDL_GAMEPAD_BUTTON_DPAD_LEFT)) {controllerState &= ~(1 << GBA_KEY_LEFT);}
-            if (SDL_GetGamepadButton(controller.get(), SDL_GAMEPAD_BUTTON_DPAD_RIGHT)) {controllerState &= ~(1 << GBA_KEY_RIGHT);}
-            if (SDL_GetGamepadButton(controller.get(), SDL_GAMEPAD_BUTTON_EAST)) {controllerState &= ~(1 << GBA_KEY_A);}
-            if (SDL_GetGamepadButton(controller.get(), SDL_GAMEPAD_BUTTON_SOUTH)) {controllerState &= ~(1 << GBA_KEY_B);}
-            if (SDL_GetGamepadButton(controller.get(), SDL_GAMEPAD_BUTTON_LEFT_SHOULDER)) {controllerState &= ~(1 << GBA_KEY_L);}
-            if (SDL_GetGamepadButton(controller.get(), SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)) {controllerState &= ~(1 << GBA_KEY_R);}
-            if (controllerState != lastControllerState) {
-                printf("Controller state changed: 0x%04X -> 0x%04X\n", lastControllerState, controllerState);
+            uint16_t tempControllerState = 0x03FF;
+            if (SDL_GetGamepadButton(controller.get(), SDL_GAMEPAD_BUTTON_START)) {tempControllerState &= ~(1 << GBA_KEY_START);}
+            if (SDL_GetGamepadButton(controller.get(), SDL_GAMEPAD_BUTTON_BACK)) {tempControllerState &= ~(1 << GBA_KEY_SELECT);}
+            if (SDL_GetGamepadButton(controller.get(), SDL_GAMEPAD_BUTTON_DPAD_UP)) {tempControllerState &= ~(1 << GBA_KEY_UP);}
+            if (SDL_GetGamepadButton(controller.get(), SDL_GAMEPAD_BUTTON_DPAD_DOWN)) {tempControllerState &= ~(1 << GBA_KEY_DOWN);}
+            if (SDL_GetGamepadButton(controller.get(), SDL_GAMEPAD_BUTTON_DPAD_LEFT)) {tempControllerState &= ~(1 << GBA_KEY_LEFT);}
+            if (SDL_GetGamepadButton(controller.get(), SDL_GAMEPAD_BUTTON_DPAD_RIGHT)) {tempControllerState &= ~(1 << GBA_KEY_RIGHT);}
+            if (SDL_GetGamepadButton(controller.get(), SDL_GAMEPAD_BUTTON_EAST)) {tempControllerState &= ~(1 << GBA_KEY_A);}
+            if (SDL_GetGamepadButton(controller.get(), SDL_GAMEPAD_BUTTON_SOUTH)) {tempControllerState &= ~(1 << GBA_KEY_B);}
+            if (SDL_GetGamepadButton(controller.get(), SDL_GAMEPAD_BUTTON_LEFT_SHOULDER)) {tempControllerState &= ~(1 << GBA_KEY_L);}
+            if (SDL_GetGamepadButton(controller.get(), SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)) {tempControllerState &= ~(1 << GBA_KEY_R);}
+            if (tempControllerState != lastControllerState) {
+                printf("Controller state changed: 0x%04X -> 0x%04X\n", lastControllerState, tempControllerState);
             }
-            lastControllerState = controllerState;
+            controllerState.store(tempControllerState);
+            lastControllerState = tempControllerState;
             }
         
 
