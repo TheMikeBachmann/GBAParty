@@ -3,6 +3,7 @@
 #include <mgba/core/core.h>
 #include <mgba/core/log.h>
 #include <mgba/gba/interface.h>
+#include <mgba/internal/gba/input.h>
 #include <vector>
 #include <memory>
 #include <thread>
@@ -37,12 +38,22 @@ void mGBALogger(struct mLogger* logger, int category, enum mLogLevel level, cons
 int main(void) {
     bool quit = false;
     SDLSession SDL;
+    setvbuf(stdout, nullptr, _IONBF, 0);
+    uint16_t controllerState = 0x03FF;
+    uint16_t lastControllerState = controllerState;
 
     // SDL window block
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         printf("SDL_Init Error: %s\n", SDL_GetError());
         return 1;
     }
+
+    // SDL controller subsystem initialization
+    if (SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER) != 0) {
+        printf("SDL_InitSubSystem Error: %s\n", SDL_GetError());
+        return 1;
+    }
+    std::unique_ptr<SDL_GameController, decltype(&SDL_GameControllerClose)> controller(nullptr, &SDL_GameControllerClose);
 
     // mgba core block. Moved here so SDL_Quit isn't called before the SDL_Init
     // video buffer for GBA screen
@@ -110,18 +121,50 @@ int main(void) {
             std::this_thread::sleep_until(deadline);
             deadline += period;
         }
-
-
     });
 
     while (!quit) {
         SDL_Event event;
 
         while (SDL_PollEvent(&event)) {
+
+            if (event.type == SDL_CONTROLLERDEVICEADDED) {
+                controller.reset(SDL_GameControllerOpen(event.cdevice.which));
+                printf("Controller added: %d\n", event.cdevice.which);
+            }
+
+            if (event.type == SDL_CONTROLLERDEVICEREMOVED) {
+                controller.reset(nullptr);
+                printf("Controller removed: %d\n", event.cdevice.which);
+            }
+
+
             if (event.type == SDL_QUIT) {
                 quit = true;
             }
         }
+
+        if (controller) {
+            // Update controller state
+            controllerState = 0x03FF; // Reset state
+            if (SDL_GameControllerGetButton(controller.get(), SDL_CONTROLLER_BUTTON_START)) {controllerState &= ~(1 << GBA_KEY_START);}
+            if (SDL_GameControllerGetButton(controller.get(), SDL_CONTROLLER_BUTTON_BACK)) {controllerState &= ~(1 << GBA_KEY_SELECT);}
+            if (SDL_GameControllerGetButton(controller.get(), SDL_CONTROLLER_BUTTON_DPAD_UP)) {controllerState &= ~(1 << GBA_KEY_UP);}
+            if (SDL_GameControllerGetButton(controller.get(), SDL_CONTROLLER_BUTTON_DPAD_DOWN)) {controllerState &= ~(1 << GBA_KEY_DOWN);}
+            if (SDL_GameControllerGetButton(controller.get(), SDL_CONTROLLER_BUTTON_DPAD_LEFT)) {controllerState &= ~(1 << GBA_KEY_LEFT);}
+            if (SDL_GameControllerGetButton(controller.get(), SDL_CONTROLLER_BUTTON_DPAD_RIGHT)) {controllerState &= ~(1 << GBA_KEY_RIGHT);}
+            if (SDL_GameControllerGetButton(controller.get(), SDL_CONTROLLER_BUTTON_A)) {controllerState &= ~(1 << GBA_KEY_A);}
+            if (SDL_GameControllerGetButton(controller.get(), SDL_CONTROLLER_BUTTON_B)) {controllerState &= ~(1 << GBA_KEY_B);}
+            if (SDL_GameControllerGetButton(controller.get(), SDL_CONTROLLER_BUTTON_LEFTSHOULDER)) {controllerState &= ~(1 << GBA_KEY_L);}
+            if (SDL_GameControllerGetButton(controller.get(), SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)) {controllerState &= ~(1 << GBA_KEY_R);}
+            if (controllerState != lastControllerState) {
+                printf("Controller state changed: 0x%04X -> 0x%04X\n", lastControllerState, controllerState);
+            }
+            lastControllerState = controllerState;
+            }
+        
+
+        
 
         if (SDL_RenderClear(renderer.get()) != 0) {
             printf("SDL_RenderClear Error: %s\n", SDL_GetError());
