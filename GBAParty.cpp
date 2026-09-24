@@ -130,12 +130,17 @@ int main(void) {
 
             if (event.type == SDL_CONTROLLERDEVICEADDED) {
                 controller.reset(SDL_GameControllerOpen(event.cdevice.which));
-                printf("Controller added: %d\n", event.cdevice.which);
+                if (controller != nullptr) {
+                    printf("Controller added: %s\n", SDL_GameControllerName(controller.get()));
+                }
+                else {
+                    printf("SDL_GameControllerOpen Error: %s\n", SDL_GetError());
+                }
             }
 
             if (event.type == SDL_CONTROLLERDEVICEREMOVED) {
                 controller.reset(nullptr);
-                printf("Controller removed: %d\n", event.cdevice.which);
+                printf("Controller removed: %s\n", SDL_GameControllerName(controller.get() ? controller.get() : nullptr));
             }
 
 
