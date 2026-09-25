@@ -13,7 +13,7 @@ add_library(imgui STATIC
 )
 target_include_directories(imgui PUBLIC third_party/imgui third_party/imgui/backends)
 target_link_libraries(imgui PUBLIC SDL3::SDL3)
-add_executable(GBAParty GBAParty.cpp)
+add_executable(GBAParty src/GBAParty.cpp)
 target_compile_features(GBAParty PRIVATE cxx_std_20)
 target_link_libraries(GBAParty PUBLIC mgba imgui SDL3::SDL3)
 target_compile_definitions(GBAParty PRIVATE ENABLE_VFS ENABLE_DIRECTORIES)
