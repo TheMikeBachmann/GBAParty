@@ -4,6 +4,8 @@
 #include <mgba/core/log.h>
 #include <mgba/gba/interface.h>
 #include <mgba/internal/gba/input.h>
+#include <mgba-util/audio-buffer.h>
+#include <mgba-util/audio-resampler.h>
 #include <vector>
 #include <memory>
 #include <thread>
@@ -48,9 +50,40 @@ struct GBAMachine {
 
     std::unique_ptr<SDL_Texture, destroyTexture> texture;
     std::unique_ptr<SDL_Gamepad, closeGamepad> controller;
+
+    mAudioBuffer audioOut;
+    mAudioResampler audioResampler;
+    unsigned sourceRate = 0;
+
     std::jthread runFrameThread;
 
+    GBAMachine() {
+        mAudioBufferInit(&audioOut, 48000, 2);
+        mAudioResamplerInit(&audioResampler, mINTERPOLATOR_SINC);
+        mAudioResamplerSetDestination(&audioResampler, &audioOut, 48000);
+    }
+
+    ~GBAMachine() {
+        runFrameThread.request_stop();
+        if (runFrameThread.joinable()) {
+            runFrameThread.join();
+        }
+        mAudioResamplerDeinit(&audioResampler);
+        mAudioBufferDeinit(&audioOut);
+    }
+
+    size_t drainAudio(int16_t* buffer, size_t length) {
+        unsigned rate = core->audioSampleRate(core.get());
+        if (rate != 0 && rate != sourceRate) {
+            sourceRate = rate;
+            mAudioResamplerSetSource(&audioResampler, core->getAudioBuffer(core.get()), sourceRate, true);
+        }
+        mAudioResamplerProcess(&audioResampler);
+        return mAudioBufferRead(&audioOut, buffer, length);
+    }
+
     [[nodiscard]] bool open(const char* romPath) {
+
         core.reset(mCoreFind(romPath));
         if (core == nullptr) {
             printf("Failed to find ROM: %s\n", romPath);
@@ -68,7 +101,7 @@ struct GBAMachine {
         core->setVideoBuffer(core.get(), videoBuffer.data(), GBA_VIDEO_HORIZONTAL_PIXELS);
         core->reset(core.get());
         return true;
-    };
+    }
 };
 
 //logger to supress less important messages
@@ -86,14 +119,8 @@ int main(void) {
     setvbuf(stdout, nullptr, _IONBF, 0);
 
     // SDL window block
-    if (!SDL_Init(SDL_INIT_VIDEO)) {
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMEPAD)) {
         printf("SDL_Init Error: %s\n", SDL_GetError());
-        return 1;
-    }
-
-    // SDL controller subsystem initialization
-    if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD)) {
-        printf("SDL_InitSubSystem Error: %s\n", SDL_GetError());
         return 1;
     }
 
@@ -107,15 +134,28 @@ int main(void) {
     }
     // Create a renderer. The window was just the address, this will display that address
     std::unique_ptr<SDL_Renderer, decltype(&SDL_DestroyRenderer)> renderer(SDL_CreateRenderer(window.get(), nullptr), &SDL_DestroyRenderer);
-    SDL_SetRenderVSync(renderer.get(), 1);
     if (renderer.get() == nullptr) {
         printf("SDL_CreateRenderer Error: %s\n", SDL_GetError());
         return 1;
     }
+    SDL_SetRenderVSync(renderer.get(), 1);
     if (!SDL_SetRenderDrawColor(renderer.get(), 255, 0, 0, 255)) {
             printf("SDL_SetRenderDrawColor Error: %s\n", SDL_GetError());
             return 1;
     }
+
+    std::unique_ptr<SDL_AudioStream, decltype(&SDL_DestroyAudioStream)> audioStream(nullptr, &SDL_DestroyAudioStream);
+    SDL_AudioSpec spec{};
+    spec.format = SDL_AUDIO_S16;
+    spec.channels = 2;
+    spec.freq = 48000;
+
+    audioStream.reset(SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nullptr, nullptr));
+    if (!audioStream) {
+        printf("SDL_OpenAudioDeviceStream Error: %s\n", SDL_GetError());
+        return 1;
+    }
+    SDL_ResumeAudioStreamDevice(audioStream.get());
 
     // mgba core block. Moved here so it's created after the renderer and destroyed in the correct order
     // video buffer for GBA screen
@@ -136,15 +176,18 @@ int main(void) {
         printf("SDL_CreateTexture Error: %s\n", SDL_GetError());
         return 1;
     }
-    
   
-    gbaMachine.runFrameThread = std::jthread([&gbaMachine](std::stop_token st) {
+    gbaMachine.runFrameThread = std::jthread([&gbaMachine, &audioStream](std::stop_token st) {
         auto period = std::chrono::duration<double>(1.0 / 59.7275); // keeps the gba framerate exactly hardware spec
         auto deadline = std::chrono::steady_clock::now() + period;
+        std::vector<int16_t> scratch(4096 * 2);
 
         while (!st.stop_requested()) {
             gbaMachine.core->setKeys(gbaMachine.core.get(), ~gbaMachine.controllerState.load() & 0x03FF);
             gbaMachine.core->runFrame(gbaMachine.core.get());
+
+            auto got = gbaMachine.drainAudio(scratch.data(), scratch.size() / 2);
+            SDL_PutAudioStreamData(audioStream.get(), scratch.data(), got * 4);
             //take the lock
             //copy video buffer to a safe location for rendering
             {
@@ -213,8 +256,6 @@ int main(void) {
             SDL_UpdateTexture(gbaMachine.texture.get(), nullptr, gbaMachine.safeVideoBuffer.data(), GBA_VIDEO_HORIZONTAL_PIXELS * sizeof(mColor));
         }
         SDL_RenderTexture(renderer.get(), gbaMachine.texture.get(), nullptr, nullptr);
-        
-
         SDL_RenderPresent(renderer.get());
     }
 
