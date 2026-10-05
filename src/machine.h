@@ -11,6 +11,7 @@
 #include <mgba/internal/gba/input.h>
 #include <mgba-util/audio-buffer.h>
 #include <mgba-util/audio-resampler.h>
+#include "players.h"
 
 struct mGBACore {
     void operator()(mCore* core) {
@@ -24,6 +25,12 @@ struct destroyTexture {
     }
 };
 
+struct destroyAudioStream {
+    void operator()(SDL_AudioStream* stream) {
+        SDL_DestroyAudioStream(stream);
+    }
+};
+
 struct closeGamepad {
     void operator()(SDL_Gamepad* gamepad) {
         SDL_CloseGamepad(gamepad);
@@ -31,6 +38,7 @@ struct closeGamepad {
 };
 
 struct GBAMachine {
+    bool opened = false;
     std::atomic<uint16_t> controllerState = 0x03FF;
     std::vector<mColor> videoBuffer = std::vector<mColor>(GBA_VIDEO_HORIZONTAL_PIXELS * GBA_VIDEO_VERTICAL_PIXELS);
     std::vector<mColor> safeVideoBuffer = std::vector<mColor>(GBA_VIDEO_HORIZONTAL_PIXELS * GBA_VIDEO_VERTICAL_PIXELS);
@@ -40,6 +48,7 @@ struct GBAMachine {
 
     std::unique_ptr<SDL_Texture, destroyTexture> texture;
     std::unique_ptr<SDL_Gamepad, closeGamepad> controller;
+    std::unique_ptr<SDL_AudioStream, destroyAudioStream> audioStream;
 
     mAudioBuffer audioOut;
     mAudioResampler audioResampler;
@@ -90,6 +99,7 @@ struct GBAMachine {
         }
         core->setVideoBuffer(core.get(), videoBuffer.data(), GBA_VIDEO_HORIZONTAL_PIXELS);
         core->reset(core.get());
+        opened = true;
         return true;
     }
 };
